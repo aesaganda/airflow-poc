@@ -15,7 +15,7 @@ default_args = {
 }
 
 with DAG(
-    dag_id='example_kubernetes_executor_dag',
+    dag_id='JOB12345',
     default_args=default_args,
     description='A simple DAG for KubernetesExecutor demo',
     schedule_interval='@daily',
