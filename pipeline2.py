@@ -1,5 +1,5 @@
 from airflow import DAG
-from airflow.operators.bash import BashOperator
+from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
 from datetime import datetime, timedelta
 
 default_args = {
@@ -10,58 +10,23 @@ default_args = {
 }
 
 dag = DAG(
-    dag_id='kubectl_job_dag',
+    dag_id='k8s_pod_operator_dag',
     default_args=default_args,
-    description='Run Kubernetes jobs using kubectl',
+    description='Run task in a separate Kubernetes pod',
     schedule_interval='@daily',
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    tags=['kubernetes', 'kubectl'],
+    tags=['kubernetes', 'pod'],
 )
 
-# Create and run a Kubernetes Job
-create_and_run_job = BashOperator(
-    task_id='run_k8s_job',
-    bash_command='''
-    # Create a temporary job YAML
-    cat << EOF > /tmp/airflow-job-{{ ts_nodash }}.yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: airflow-task-{{ ts_nodash }}
-  namespace: default
-spec:
-  template:
-    spec:
-      containers:
-      - name: task-container
-        image: python:3.9-slim
-        command: ["python", "-c"]
-        args: ["print('Hello from Kubernetes Job!'); import time; time.sleep(10)"]
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-      restartPolicy: Never
-  backoffLimit: 3
-EOF
-
-    # Apply the job
-    kubectl apply -f /tmp/airflow-job-{{ ts_nodash }}.yaml
-    
-    # Wait for job completion
-    kubectl wait --for=condition=complete --timeout=300s job/airflow-task-{{ ts_nodash }}
-    
-    # Get job logs
-    POD_NAME=$(kubectl get pods --selector=job-name=airflow-task-{{ ts_nodash }} -o jsonpath='{.items[0].metadata.name}')
-    kubectl logs $POD_NAME
-    
-    # Cleanup
-    kubectl delete job airflow-task-{{ ts_nodash }}
-    rm /tmp/airflow-job-{{ ts_nodash }}.yaml
-    ''',
+run_in_pod = KubernetesPodOperator(
+    task_id='run_python_task',
+    name='run-python-task',
+    namespace='default',
+    image='python:3.9-slim',
+    cmds=["python", "-c"],
+    arguments=["print('Hello from KubernetesPodOperator!'); import time; time.sleep(10)"],
+    get_logs=True,
+    is_delete_operator_pod=True,
     dag=dag,
 )
