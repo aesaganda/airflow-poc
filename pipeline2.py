@@ -1,5 +1,5 @@
 from airflow import DAG
-from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
+from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 
 default_args = {
@@ -9,35 +9,59 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-with DAG(
-    dag_id='example_kubernetes_pod_dag',
+dag = DAG(
+    dag_id='kubectl_job_dag',
     default_args=default_args,
-    description='A DAG that runs tasks in dedicated K8s pods',
+    description='Run Kubernetes jobs using kubectl',
     schedule_interval='@daily',
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    tags=['kubernetes', 'example'],
-) as dag:
+    tags=['kubernetes', 'kubectl'],
+)
 
-    task = KubernetesPodOperator(
-        task_id='print_hello_k8s',
-        name='hello-task-pod',
-        namespace='default',  # or your specific namespace
-        image='python:3.9-slim',  # Use appropriate image
-        cmds=['python', '-c'],
-        arguments=['print("Hello from dedicated Kubernetes pod!")'],
-        # Pod will be deleted after completion
-        is_delete_operator_pod=True,
-        # Get logs from the pod
-        get_logs=True,
-        # Optional: specify resources
-        resources={
-            'request_memory': '128Mi',
-            'request_cpu': '100m',
-            'limit_memory': '512Mi',
-            'limit_cpu': '500m',
-        },
-        # Optional: specify node selector, tolerations, etc.
-        # node_selector={'node-type': 'worker'},
-        # tolerations=[...],
-    )
+# Create and run a Kubernetes Job
+create_and_run_job = BashOperator(
+    task_id='run_k8s_job',
+    bash_command='''
+    # Create a temporary job YAML
+    cat << EOF > /tmp/airflow-job-{{ ts_nodash }}.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-task-{{ ts_nodash }}
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - name: task-container
+        image: python:3.9-slim
+        command: ["python", "-c"]
+        args: ["print('Hello from Kubernetes Job!'); import time; time.sleep(10)"]
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 3
+EOF
+
+    # Apply the job
+    kubectl apply -f /tmp/airflow-job-{{ ts_nodash }}.yaml
+    
+    # Wait for job completion
+    kubectl wait --for=condition=complete --timeout=300s job/airflow-task-{{ ts_nodash }}
+    
+    # Get job logs
+    POD_NAME=$(kubectl get pods --selector=job-name=airflow-task-{{ ts_nodash }} -o jsonpath='{.items[0].metadata.name}')
+    kubectl logs $POD_NAME
+    
+    # Cleanup
+    kubectl delete job airflow-task-{{ ts_nodash }}
+    rm /tmp/airflow-job-{{ ts_nodash }}.yaml
+    ''',
+    dag=dag,
+)
